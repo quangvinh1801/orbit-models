@@ -48,6 +48,10 @@ jobs:
         run: |
           git clone -q --depth 1 --branch 3.8.1 https://github.com/huggingface/transformers.js tjs
           pip install -q -r tjs/scripts/requirements.txt
+          # Both full-precision files are over protobuf's 2 GB, where measuring the model fails;
+          # shape inference can't run on them anyway, so it is skipped (the 16-bit files are under 2 GB).
+          sed -i 's/disable_shape_infer = model.ByteSize() >= onnx.checker.MAXIMUM_PROTOBUF/disable_shape_infer = True/' tjs/scripts/quantize.py
+          grep -n 'disable_shape_infer = True' tjs/scripts/quantize.py
           mkdir -p out
           (cd tjs && python -m scripts.quantize --input_folder ../src/onnx --output_folder ../out --modes fp16)
           ls -la out
