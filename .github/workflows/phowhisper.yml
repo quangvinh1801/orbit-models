@@ -49,9 +49,17 @@ jobs:
           git clone -q --depth 1 --branch 3.8.1 https://github.com/huggingface/transformers.js tjs
           pip install -q -r tjs/scripts/requirements.txt
           # Both full-precision files are over protobuf's 2 GB, where measuring the model fails;
-          # shape inference can't run on them anyway, so it is skipped (the 16-bit files are under 2 GB).
+          # types were inferred above with the path API, so the converter skips its own pass.
           sed -i 's/disable_shape_infer = model.ByteSize() >= onnx.checker.MAXIMUM_PROTOBUF/disable_shape_infer = True/' tjs/scripts/quantize.py
           grep -n 'disable_shape_infer = True' tjs/scripts/quantize.py
+          # Infer types on the full-precision files first (path API, works past 2 GB), so the
+          # 16-bit converter knows every tensor's type, including those inside the decoder's If branches.
+          python - <<'PY'
+          import onnx
+          for n in ['encoder_model', 'decoder_model_merged']:
+              onnx.shape_inference.infer_shapes_path(f'src/onnx/{n}.onnx', f'src/onnx/{n}.onnx')
+              print('types inferred:', n)
+          PY
           mkdir -p out
           (cd tjs && python -m scripts.quantize --input_folder ../src/onnx --output_folder ../out --modes fp16)
           ls -la out
