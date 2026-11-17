@@ -1,0 +1,74 @@
+name: PhoWhisper-large 16-bit
+# Converts VinAI's PhoWhisper-large (ONNX export by huuquyet, pinned revision) to 16-bit ONNX
+# with the Transformers.js tools, and publishes the files as a release for Orbit to download.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/phowhisper.yml]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      TAG: phowhisper-large-fp16-v1
+      SOURCE: huuquyet/PhoWhisper-large
+      REV: 1c2dc3659b1646ffd09c052d3433f899f6e1c789
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Already published?
+        id: have
+        run: if gh release view "$TAG" >/dev/null 2>&1; then echo "done=1" >> "$GITHUB_OUTPUT"; fi
+      - name: Free disk space
+        if: steps.have.outputs.done != '1'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+      - uses: actions/setup-python@v5
+        if: steps.have.outputs.done != '1'
+        with:
+          python-version: '3.11'
+      - name: Download the full-precision ONNX files
+        if: steps.have.outputs.done != '1'
+        run: |
+          pip install -q huggingface_hub==0.26.5
+          python - <<'PY'
+          import os
+          from huggingface_hub import snapshot_download
+          snapshot_download(os.environ['SOURCE'], revision=os.environ['REV'], local_dir='src',
+                            allow_patterns=['*.json', '*.txt', 'onnx/encoder_model.onnx', 'onnx/encoder_model.onnx_data',
+                                            'onnx/decoder_model_merged.onnx', 'onnx/decoder_model_merged.onnx_data'])
+          PY
+          ls -la src src/onnx
+      - name: Convert to 16-bit
+        if: steps.have.outputs.done != '1'
+        run: |
+          git clone -q --depth 1 --branch 3.8.1 https://github.com/huggingface/transformers.js tjs
+          pip install -q -r tjs/scripts/requirements.txt
+          mkdir -p out
+          (cd tjs && python -m scripts.quantize --input_folder ../src/onnx --output_folder ../out --modes fp16)
+          ls -la out
+          rm -rf src/onnx
+      - name: Publish
+        if: steps.have.outputs.done != '1'
+        run: |
+          mkdir pub
+          cp out/encoder_model_fp16.onnx out/decoder_model_merged_fp16.onnx pub/
+          for f in src/*.json src/*.txt; do cp "$f" pub/; done
+          curl -sfL https://raw.githubusercontent.com/VinAIResearch/PhoWhisper/main/LICENSE -o pub/LICENSE-PhoWhisper.txt || true
+          (cd pub && python3 - <<'PY'
+          import hashlib, json, os
+          files = []
+          for name in sorted(os.listdir('.')):
+              h = hashlib.sha256()
+              with open(name, 'rb') as f:
+                  for chunk in iter(lambda: f.read(1 << 20), b''): h.update(chunk)
+              files.append({'name': name, 'size': os.path.getsize(name), 'sha256': h.hexdigest()})
+          json.dump({'source': os.environ['SOURCE'], 'revision': os.environ['REV'], 'files': files}, open('manifest.json', 'w'), indent=1)
+          print(json.dumps(files, indent=1))
+          PY
+          )
+          gh release create "$TAG" pub/* --title "PhoWhisper-large, 16-bit ONNX" --notes-file README.md
